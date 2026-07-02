@@ -4,6 +4,11 @@ Browse your Spotify liked tracks and playlists through an immersive CoverFlow ex
 
 **Live demo:** [steelskies.com/coverflow](https://www.steelskies.com/coverflow/)
 
+<p align="center">
+  <img src="images/screenshot-ipad-1.png" alt="CoverFlow browsing view on iPad Air" width="45%" />
+  <img src="images/screenshot-ipad-2.png" alt="CoverFlow playback view on iPad Air" width="45%" />
+</p>
+
 ## Features
 
 - CoverFlow 3D effect with reflection
