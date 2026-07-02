@@ -5,6 +5,7 @@ const tokenKey = 'spotify_access_token';
 const refreshTokenKey = 'spotify_refresh_token';
 const expiresKey = 'spotify_expires_at';
 const playlistLinkKey = 'spotify_playlist_link';
+const clientIdOverrideKey = 'spotify_client_id_override';
 
 // Derived from the current URL so it works on any host (localhost, GitHub Pages, custom domain)
 const redirectUri = window.location.href.split('?')[0];
@@ -21,6 +22,16 @@ const player = document.getElementById('player');
 const menuBtn = document.getElementById('menu-btn');
 const menuPanel = document.getElementById('menu-panel');
 const disconnectBtn = document.getElementById('disconnect-btn');
+const clientIdSetup = document.getElementById('clientid-setup');
+const clientIdInput = document.getElementById('clientid-input');
+const clientIdSaveBtn = document.getElementById('clientid-save');
+
+// config.js (gitignored) defines a `clientId` const when present. On hosts where it wasn't
+// deployed, `clientId` is simply never declared — `typeof` is the safe way to probe for that.
+function getClientId() {
+  if (typeof clientId !== 'undefined' && clientId && clientId !== 'your_spotify_client_id_here') return clientId;
+  return localStorage.getItem(clientIdOverrideKey) || '';
+}
 
 const appState = {
   accessToken: localStorage.getItem(tokenKey) || '',
@@ -205,7 +216,7 @@ async function getAuthUrl() {
 
   const params = new URLSearchParams({
     response_type: 'code',
-    client_id: clientId,
+    client_id: getClientId(),
     scope,
     redirect_uri: redirectUri,
     state,
@@ -222,7 +233,27 @@ async function startLogin() {
     await loadDefaultContent();
     return;
   }
+  if (!getClientId()) {
+    revealClientIdSetup();
+    setStatus('Enter your Spotify Client ID below to connect.');
+    return;
+  }
   await getAuthUrl();
+}
+
+function revealClientIdSetup() {
+  if (!clientIdSetup) return;
+  clientIdSetup.hidden = false;
+  if (clientIdInput) clientIdInput.focus();
+}
+
+function saveClientId() {
+  if (!clientIdInput) return;
+  const value = clientIdInput.value.trim();
+  if (!value) return;
+  localStorage.setItem(clientIdOverrideKey, value);
+  if (clientIdSetup) clientIdSetup.hidden = true;
+  setStatus('Client ID saved. Click Connect with Spotify to continue.');
 }
 
 async function exchangeCode(code, state) {
@@ -242,7 +273,7 @@ async function exchangeCode(code, state) {
         grant_type: 'authorization_code',
         code,
         redirect_uri: redirectUri,
-        client_id: clientId,
+        client_id: getClientId(),
         code_verifier: codeVerifier || '',
       }),
     },
@@ -275,7 +306,7 @@ async function refreshAccessToken() {
       body: new URLSearchParams({
         grant_type: 'refresh_token',
         refresh_token: appState.refreshToken,
-        client_id: clientId,
+        client_id: getClientId(),
       }),
     },
     'Unable to refresh your Spotify session.'
@@ -524,6 +555,13 @@ if (loginButton) loginButton.addEventListener('click', startLogin);
 if (demoButton) {
   demoButton.addEventListener('click', () => {
     loadFallbackPlaylist('Demo mode — connect Spotify for your own playlists.');
+  });
+}
+
+if (clientIdSaveBtn && clientIdInput) {
+  clientIdSaveBtn.addEventListener('click', saveClientId);
+  clientIdInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveClientId(); }
   });
 }
 

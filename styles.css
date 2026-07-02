@@ -99,6 +99,11 @@ button { font: inherit; border: none; cursor: pointer; }
 }
 .landing-link:hover { color: #fff; text-decoration-color: rgba(255,255,255,0.7); }
 
+.clientid-setup {
+  margin-top: 1.25rem;
+  text-align: left;
+}
+
 /* ── Player ──────────────────────────────────────────── */
 
 .view-player {
