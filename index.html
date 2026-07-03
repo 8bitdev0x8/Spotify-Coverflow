@@ -49,6 +49,41 @@
         <hr class="menu-divider" />
         <button id="disconnect-btn" class="menu-action danger">Disconnect</button>
       </div>
+
+      <!-- Miniplayer -->
+      <div id="miniplayer" class="miniplayer">
+        <div class="miniplayer-progress">
+          <span id="miniplayer-time-current" class="miniplayer-time">0:00</span>
+          <input id="miniplayer-seek" class="miniplayer-seek" type="range" min="0" max="0" value="0" aria-label="Seek" />
+          <span id="miniplayer-time-duration" class="miniplayer-time">0:00</span>
+        </div>
+        <div class="miniplayer-controls">
+          <button id="miniplayer-lyrics" class="miniplayer-btn miniplayer-lyrics-btn" aria-label="Show lyrics">Aa</button>
+          <div class="miniplayer-transport">
+            <button id="miniplayer-prev" class="miniplayer-btn" aria-label="Previous track">&#9198;</button>
+            <button id="miniplayer-playpause" class="miniplayer-btn miniplayer-btn-main" aria-label="Play">&#9654;</button>
+            <button id="miniplayer-next" class="miniplayer-btn" aria-label="Next track">&#9197;</button>
+          </div>
+          <div class="miniplayer-volume">
+            <button id="miniplayer-mute" class="miniplayer-btn" aria-label="Mute"></button>
+            <input id="miniplayer-volume-slider" class="miniplayer-volume-slider" type="range" min="0" max="100" value="70" aria-label="Volume" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Lyrics -->
+      <div id="lyrics-view" class="lyrics-view" hidden>
+        <div class="lyrics-panel">
+          <button id="lyrics-close" class="lyrics-close" aria-label="Close lyrics">&times;</button>
+          <div class="lyrics-header">
+            <p id="lyrics-track-title" class="lyrics-track-title">—</p>
+            <p id="lyrics-track-artist" class="lyrics-track-artist">—</p>
+          </div>
+          <div id="lyrics-body" class="lyrics-body">
+            <p class="placeholder">Select a track to see lyrics.</p>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Global status toast -->
@@ -59,6 +94,7 @@
       V0.1 &nbsp;&bull;&nbsp; <a href="https://github.com/8bitdev0x8" target="_blank" rel="noopener">@8bitdev0x8</a>
     </footer>
 
+    <script src="https://sdk.scdn.co/spotify-player.js"></script>
     <script src="config.js"></script>
     <script src="app.js"></script>
   </body>
