@@ -115,7 +115,7 @@ button { font: inherit; border: none; cursor: pointer; }
   justify-content: center;
   background: radial-gradient(circle at top left, #1a3358 0%, #07111f 45%, #03060b 100%);
   overflow: hidden;
-  padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
+  padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) calc(8.5rem + env(safe-area-inset-bottom, 0)) env(safe-area-inset-left, 0);
 }
 
 /* ── Coverflow ───────────────────────────────────────── */
@@ -182,6 +182,76 @@ button { font: inherit; border: none; cursor: pointer; }
   mask-image: linear-gradient(to top, rgba(0,0,0,0.52) 0%, rgba(0,0,0,0.18) 40%, transparent 75%);
   -webkit-mask-image: linear-gradient(to top, rgba(0,0,0,0.52) 0%, rgba(0,0,0,0.18) 40%, transparent 75%);
   pointer-events: none;
+}
+
+.card-vinyl {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: var(--card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.92);
+  transition: opacity 320ms ease, transform 320ms ease;
+  pointer-events: none;
+}
+
+.coverflow-track.is-playing .cover-card.is-now-playing .card-vinyl {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.card-vinyl-disc {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    repeating-radial-gradient(circle at center, rgba(255, 255, 255, 0.07) 0, rgba(255, 255, 255, 0.07) 1px, transparent 1.5px, transparent 6px),
+    radial-gradient(circle at 35% 30%, #2c2c31, #08080a 72%);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  animation: vinyl-spin 8s linear infinite;
+  animation-play-state: paused;
+}
+
+.coverflow-track.is-playing .cover-card.is-now-playing .card-vinyl-disc {
+  animation-play-state: running;
+}
+
+.card-vinyl-label {
+  position: relative;
+  width: 38%;
+  height: 38%;
+  flex-shrink: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.7), 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+
+.card-vinyl-art {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.card-vinyl-hole {
+  position: absolute;
+  width: 6%;
+  height: 6%;
+  border-radius: 50%;
+  background: #000;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-vinyl-disc { animation: none; }
 }
 
 /* ── Track info ──────────────────────────────────────── */
@@ -388,6 +458,10 @@ button { font: inherit; border: none; cursor: pointer; }
     inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
+@keyframes vinyl-spin {
+  to { transform: rotate(360deg); }
+}
+
 .miniplayer-progress {
   display: flex;
   align-items: center;
@@ -496,10 +570,10 @@ button { font: inherit; border: none; cursor: pointer; }
   flex-direction: column;
   align-items: center;
   background:
-    linear-gradient(180deg, rgba(20, 26, 40, 0.6), rgba(3, 6, 11, 0.75) 55%),
-    rgba(6, 10, 18, 0.55);
-  backdrop-filter: blur(34px) saturate(160%);
-  -webkit-backdrop-filter: blur(34px) saturate(160%);
+    linear-gradient(180deg, rgba(20, 26, 40, 0.4), rgba(3, 6, 11, 0.52) 55%),
+    rgba(6, 10, 18, 0.35);
+  backdrop-filter: blur(26px) saturate(160%);
+  -webkit-backdrop-filter: blur(26px) saturate(160%);
   animation: lyrics-fade-in 0.25s ease;
 }
 
@@ -558,12 +632,16 @@ button { font: inherit; border: none; cursor: pointer; }
   flex: 1;
   min-height: 0;
   text-align: center;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+
+.lyrics-body::-webkit-scrollbar { display: none; }
 
 .lyrics-text {
   margin: 0;
   font-family: inherit;
-  font-size: 1rem;
+  font-size: 1.55rem;
   line-height: 1.9;
   color: rgba(247, 248, 255, 0.88);
   white-space: pre-wrap;
