@@ -65,6 +65,7 @@ let deviceId = null;
 let isSeeking = false;
 let progressTimer = null;
 let playbackState = { paused: true, position: 0, duration: 0 };
+let nowPlayingIndex = -1;
 
 const volumeKey = 'spotify_player_volume';
 let currentVolume = Number(localStorage.getItem(volumeKey) ?? 70);
@@ -482,11 +483,29 @@ function createCard(track, index) {
 
   artFrame.append(img);
 
+  const vinyl = document.createElement('div');
+  vinyl.className = 'card-vinyl';
+  vinyl.setAttribute('aria-hidden', 'true');
+  const vinylDisc = document.createElement('div');
+  vinylDisc.className = 'card-vinyl-disc';
+  const vinylLabel = document.createElement('span');
+  vinylLabel.className = 'card-vinyl-label';
+  const vinylArt = document.createElement('img');
+  vinylArt.className = 'card-vinyl-art';
+  vinylArt.src = imageUrl;
+  vinylArt.alt = '';
+  vinylArt.loading = 'lazy';
+  vinylLabel.append(vinylArt);
+  const vinylHole = document.createElement('span');
+  vinylHole.className = 'card-vinyl-hole';
+  vinylDisc.append(vinylLabel, vinylHole);
+  vinyl.append(vinylDisc);
+
   const reflection = document.createElement('div');
   reflection.className = 'cover-reflection';
   reflection.style.backgroundImage = `url("${imageUrl}")`;
 
-  article.append(artFrame, reflection);
+  article.append(artFrame, vinyl, reflection);
   article.addEventListener('click', () => {
     if (index === appState.activeIndex) playTrackAtIndex(index);
     else selectItem(index);
@@ -513,6 +532,14 @@ function syncVirtualCards() {
   for (let i = start; i <= end; i++) {
     if (!rendered.has(i)) coverflowTrack.appendChild(createCard(items[i], i));
   }
+
+  updateNowPlayingCard();
+}
+
+function updateNowPlayingCard() {
+  coverflowTrack.querySelectorAll('.cover-card').forEach((card) => {
+    card.classList.toggle('is-now-playing', +card.dataset.index === nowPlayingIndex);
+  });
 }
 
 function renderCoverflow() {
@@ -606,6 +633,7 @@ function updateMiniplayerProgress() {
   miniplayerTimeDuration.textContent = formatTime(duration);
   miniplayerPlayPause.innerHTML = paused ? '&#9654;' : '&#10074;&#10074;';
   miniplayerPlayPause.setAttribute('aria-label', paused ? 'Play' : 'Pause');
+  coverflowTrack.classList.toggle('is-playing', !paused);
 }
 
 function startProgressTimer() {
@@ -620,19 +648,21 @@ function startProgressTimer() {
 function handlePlayerStateChanged(state) {
   if (!state) {
     playbackState = { paused: true, position: 0, duration: 0 };
+    nowPlayingIndex = -1;
     updateMiniplayerProgress();
+    updateNowPlayingCard();
     return;
   }
 
   playbackState = { paused: state.paused, position: state.position, duration: state.duration };
 
   const currentTrack = state.track_window?.current_track;
-  if (currentTrack?.uri) {
-    const idx = appState.items.findIndex((t) => t.uri === currentTrack.uri);
-    if (idx >= 0 && idx !== appState.activeIndex) selectItem(idx);
-  }
+  const idx = currentTrack?.uri ? appState.items.findIndex((t) => t.uri === currentTrack.uri) : -1;
+  nowPlayingIndex = idx;
+  if (idx >= 0 && idx !== appState.activeIndex) selectItem(idx);
 
   updateMiniplayerProgress();
+  updateNowPlayingCard();
 }
 
 function maybeInitPlayer() {
@@ -671,7 +701,9 @@ function teardownPlayer() {
   deviceId = null;
   clearInterval(progressTimer);
   playbackState = { paused: true, position: 0, duration: 0 };
+  nowPlayingIndex = -1;
   updateMiniplayerProgress();
+  updateNowPlayingCard();
 }
 
 async function playTrackAtIndex(index) {
@@ -955,6 +987,12 @@ window.onSpotifyWebPlaybackSDKReady = () => {
 refreshMiniplayerButtons();
 updateMiniplayerProgress();
 updateVolumeUi();
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch((err) => console.error('Service worker registration failed:', err));
+  });
+}
 
 // ── Init ─────────────────────────────────────────────
 
