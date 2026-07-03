@@ -1,4 +1,4 @@
-const scope = 'playlist-read-private playlist-read-collaborative user-library-read';
+const scope = 'playlist-read-private playlist-read-collaborative user-library-read streaming user-read-email user-read-private';
 const stateKey = 'spotify_auth_state';
 const codeVerifierKey = 'spotify_code_verifier';
 const tokenKey = 'spotify_access_token';
@@ -25,6 +25,21 @@ const disconnectBtn = document.getElementById('disconnect-btn');
 const clientIdSetup = document.getElementById('clientid-setup');
 const clientIdInput = document.getElementById('clientid-input');
 const clientIdSaveBtn = document.getElementById('clientid-save');
+const miniplayer = document.getElementById('miniplayer');
+const miniplayerPrev = document.getElementById('miniplayer-prev');
+const miniplayerPlayPause = document.getElementById('miniplayer-playpause');
+const miniplayerNext = document.getElementById('miniplayer-next');
+const miniplayerSeek = document.getElementById('miniplayer-seek');
+const miniplayerTimeCurrent = document.getElementById('miniplayer-time-current');
+const miniplayerTimeDuration = document.getElementById('miniplayer-time-duration');
+const miniplayerMute = document.getElementById('miniplayer-mute');
+const miniplayerVolumeSlider = document.getElementById('miniplayer-volume-slider');
+const miniplayerLyricsBtn = document.getElementById('miniplayer-lyrics');
+const lyricsView = document.getElementById('lyrics-view');
+const lyricsClose = document.getElementById('lyrics-close');
+const lyricsTrackTitle = document.getElementById('lyrics-track-title');
+const lyricsTrackArtist = document.getElementById('lyrics-track-artist');
+const lyricsBody = document.getElementById('lyrics-body');
 
 // config.js (gitignored) defines a `clientId` const when present. On hosts where it wasn't
 // deployed, `clientId` is simply never declared — `typeof` is the safe way to probe for that.
@@ -43,6 +58,22 @@ const appState = {
 
 let loadGeneration = 0;
 const RENDER_WINDOW = 8;
+
+let sdkReady = false;
+let spotifyPlayer = null;
+let deviceId = null;
+let isSeeking = false;
+let progressTimer = null;
+let playbackState = { paused: true, position: 0, duration: 0 };
+
+const volumeKey = 'spotify_player_volume';
+let currentVolume = Number(localStorage.getItem(volumeKey) ?? 70);
+let volumeBeforeMute = currentVolume || 70;
+
+let lyricsRequestGen = 0;
+
+const volumeIconOn = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M4 9v6h4l5 5V4L8 9H4z"/><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.06c1.48-.74 2.5-2.26 2.5-4.03z"/><path d="M14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
+const volumeIconMuted = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M19 12c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71z"/><path d="M4.27 3 3 4.27 7.73 9H4v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73 4.27 3z"/></svg>';
 
 // Wipe any playlist stored from old versions — liked tracks is now the default.
 localStorage.removeItem(playlistLinkKey);
@@ -428,6 +459,7 @@ async function loadLikedTracks() {
 }
 
 async function loadDefaultContent() {
+  maybeInitPlayer();
   if (playlistLink) await loadPlaylistTracks();
   else await loadLikedTracks();
 }
@@ -455,7 +487,10 @@ function createCard(track, index) {
   reflection.style.backgroundImage = `url("${imageUrl}")`;
 
   article.append(artFrame, reflection);
-  article.addEventListener('click', () => selectItem(index));
+  article.addEventListener('click', () => {
+    if (index === appState.activeIndex) playTrackAtIndex(index);
+    else selectItem(index);
+  });
   return article;
 }
 
@@ -522,6 +557,8 @@ function updateSelection() {
   const selectedTrack = appState.items[appState.activeIndex];
   if (!selectedTrack) {
     selectedInfo.innerHTML = '<p class="placeholder">Nothing selected yet.</p>';
+    refreshMiniplayerButtons();
+    if (lyricsView && !lyricsView.hidden) fetchLyricsForCurrent();
     return;
   }
 
@@ -533,12 +570,235 @@ function updateSelection() {
     <p class="track-artist">${artistNames}</p>
     <p class="track-album">${albumName}</p>
   `;
+
+  refreshMiniplayerButtons();
+  if (lyricsView && !lyricsView.hidden) fetchLyricsForCurrent();
 }
 
 function selectItem(index) {
   appState.activeIndex = index;
   syncVirtualCards();
   updateSelection();
+}
+
+// ── Miniplayer / Web Playback SDK ─────────────────────
+
+function formatTime(ms) {
+  const totalSec = Math.max(0, Math.floor((ms || 0) / 1000));
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}:${sec.toString().padStart(2, '0')}`;
+}
+
+function refreshMiniplayerButtons() {
+  const track = appState.items[appState.activeIndex];
+  miniplayerPlayPause.disabled = !track || !track.uri;
+  miniplayerPrev.disabled = appState.activeIndex <= 0;
+  miniplayerNext.disabled = appState.activeIndex >= appState.items.length - 1;
+  miniplayerSeek.disabled = !track || !track.uri;
+}
+
+function updateMiniplayerProgress() {
+  const { position, duration, paused } = playbackState;
+  miniplayerSeek.max = String(duration || 0);
+  if (!isSeeking) miniplayerSeek.value = String(position);
+  miniplayerTimeCurrent.textContent = formatTime(position);
+  miniplayerTimeDuration.textContent = formatTime(duration);
+  miniplayerPlayPause.innerHTML = paused ? '&#9654;' : '&#10074;&#10074;';
+  miniplayerPlayPause.setAttribute('aria-label', paused ? 'Play' : 'Pause');
+}
+
+function startProgressTimer() {
+  clearInterval(progressTimer);
+  progressTimer = setInterval(() => {
+    if (playbackState.paused || isSeeking) return;
+    playbackState.position = Math.min(playbackState.duration, playbackState.position + 500);
+    updateMiniplayerProgress();
+  }, 500);
+}
+
+function handlePlayerStateChanged(state) {
+  if (!state) {
+    playbackState = { paused: true, position: 0, duration: 0 };
+    updateMiniplayerProgress();
+    return;
+  }
+
+  playbackState = { paused: state.paused, position: state.position, duration: state.duration };
+
+  const currentTrack = state.track_window?.current_track;
+  if (currentTrack?.uri) {
+    const idx = appState.items.findIndex((t) => t.uri === currentTrack.uri);
+    if (idx >= 0 && idx !== appState.activeIndex) selectItem(idx);
+  }
+
+  updateMiniplayerProgress();
+}
+
+function maybeInitPlayer() {
+  if (!sdkReady || spotifyPlayer || !appState.accessToken) return;
+
+  spotifyPlayer = new Spotify.Player({
+    name: 'CoverFlow Web Player',
+    getOAuthToken: async (callback) => {
+      if (!await ensureToken()) return;
+      callback(appState.accessToken);
+    },
+    volume: currentVolume / 100,
+  });
+
+  spotifyPlayer.addListener('ready', ({ device_id }) => {
+    deviceId = device_id;
+  });
+
+  spotifyPlayer.addListener('not_ready', ({ device_id }) => {
+    if (deviceId === device_id) deviceId = null;
+  });
+
+  spotifyPlayer.addListener('initialization_error', ({ message }) => setStatus(`Playback init failed: ${message}`));
+  spotifyPlayer.addListener('authentication_error', ({ message }) => setStatus(`Playback auth failed: ${message}`));
+  spotifyPlayer.addListener('account_error', () => setStatus('Spotify Premium is required to play music here.'));
+  spotifyPlayer.addListener('playback_error', ({ message }) => setStatus(`Playback error: ${message}`));
+  spotifyPlayer.addListener('player_state_changed', handlePlayerStateChanged);
+
+  spotifyPlayer.connect();
+  startProgressTimer();
+}
+
+function teardownPlayer() {
+  if (spotifyPlayer) spotifyPlayer.disconnect();
+  spotifyPlayer = null;
+  deviceId = null;
+  clearInterval(progressTimer);
+  playbackState = { paused: true, position: 0, duration: 0 };
+  updateMiniplayerProgress();
+}
+
+async function playTrackAtIndex(index) {
+  const track = appState.items[index];
+  if (!track || !track.uri) {
+    setStatus('This track can’t be streamed (demo track).');
+    return;
+  }
+  if (!deviceId) {
+    setStatus('Player still connecting — try again in a moment.');
+    return;
+  }
+  if (!await ensureToken()) {
+    setStatus('Session expired — please reconnect.');
+    return;
+  }
+
+  const { response, payload, error } = await fetchSpotifyJson(
+    `https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`,
+    {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${appState.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ uris: [track.uri] }),
+    },
+    'Unable to start playback.'
+  );
+
+  if (error) return;
+  if (!response.ok && response.status !== 204) {
+    setStatus(response.status === 404
+      ? 'No active device — try reloading the page.'
+      : describeSpotifyError(payload, 'Could not play track.'));
+  }
+}
+
+async function togglePlayback() {
+  if (!spotifyPlayer) return;
+  const state = await spotifyPlayer.getCurrentState();
+  if (!state) {
+    await playTrackAtIndex(appState.activeIndex);
+    return;
+  }
+  await spotifyPlayer.togglePlay();
+}
+
+// ── Volume ─────────────────────────────────────────────
+
+function updateVolumeUi() {
+  miniplayerVolumeSlider.value = String(currentVolume);
+  miniplayerMute.innerHTML = currentVolume === 0 ? volumeIconMuted : volumeIconOn;
+  miniplayerMute.setAttribute('aria-label', currentVolume === 0 ? 'Unmute' : 'Mute');
+}
+
+function setVolume(value) {
+  currentVolume = Math.min(100, Math.max(0, value));
+  localStorage.setItem(volumeKey, String(currentVolume));
+  updateVolumeUi();
+  if (spotifyPlayer) spotifyPlayer.setVolume(currentVolume / 100);
+}
+
+function toggleMute() {
+  if (currentVolume > 0) {
+    volumeBeforeMute = currentVolume;
+    setVolume(0);
+  } else {
+    setVolume(volumeBeforeMute || 70);
+  }
+}
+
+// ── Lyrics ─────────────────────────────────────────────
+
+function closeLyrics() {
+  lyricsView.hidden = true;
+  miniplayerLyricsBtn.classList.remove('is-active');
+  if (miniplayer) miniplayer.hidden = false;
+}
+
+async function fetchLyricsForCurrent() {
+  const track = appState.items[appState.activeIndex];
+  if (!track) {
+    lyricsTrackTitle.textContent = '—';
+    lyricsTrackArtist.textContent = '—';
+    lyricsBody.innerHTML = '<p class="placeholder">Select a track to see lyrics.</p>';
+    return;
+  }
+
+  const artist = (track.artists || [])[0]?.name || '';
+  const title = track.name || '';
+  lyricsTrackTitle.textContent = title || 'Unknown track';
+  lyricsTrackArtist.textContent = artist || 'Unknown artist';
+  lyricsBody.innerHTML = '<p class="placeholder">Loading lyrics…</p>';
+
+  const gen = ++lyricsRequestGen;
+  try {
+    const res = await fetch(`https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`);
+    const data = await res.json();
+    if (gen !== lyricsRequestGen) return;
+
+    if (data?.lyrics) {
+      const pre = document.createElement('pre');
+      pre.className = 'lyrics-text';
+      pre.textContent = data.lyrics.trim();
+      lyricsBody.innerHTML = '';
+      lyricsBody.appendChild(pre);
+    } else {
+      lyricsBody.innerHTML = '<p class="placeholder">No lyrics found for this track.</p>';
+    }
+  } catch (err) {
+    if (gen !== lyricsRequestGen) return;
+    console.error(err);
+    lyricsBody.innerHTML = '<p class="placeholder">Couldn’t load lyrics right now.</p>';
+  }
+}
+
+function openLyrics() {
+  lyricsView.hidden = false;
+  miniplayerLyricsBtn.classList.add('is-active');
+  if (miniplayer) miniplayer.hidden = true;
+  fetchLyricsForCurrent();
+}
+
+function toggleLyrics() {
+  if (lyricsView.hidden) openLyrics();
+  else closeLyrics();
 }
 
 function handleWheel(event) {
@@ -625,6 +885,7 @@ if (menuBtn && menuPanel) {
 
 if (disconnectBtn) {
   disconnectBtn.addEventListener('click', () => {
+    teardownPlayer();
     clearToken();
     clearPlaylistLink();
     if (menuPanel) menuPanel.hidden = true;
@@ -633,6 +894,67 @@ if (disconnectBtn) {
     appState.activeIndex = 0;
   });
 }
+
+if (miniplayerPlayPause) miniplayerPlayPause.addEventListener('click', togglePlayback);
+
+if (miniplayerNext) {
+  miniplayerNext.addEventListener('click', () => {
+    const nextIndex = Math.min(appState.items.length - 1, appState.activeIndex + 1);
+    selectItem(nextIndex);
+    playTrackAtIndex(nextIndex);
+  });
+}
+
+if (miniplayerPrev) {
+  miniplayerPrev.addEventListener('click', () => {
+    const prevIndex = Math.max(0, appState.activeIndex - 1);
+    selectItem(prevIndex);
+    playTrackAtIndex(prevIndex);
+  });
+}
+
+if (miniplayerSeek) {
+  miniplayerSeek.addEventListener('input', () => {
+    isSeeking = true;
+    miniplayerTimeCurrent.textContent = formatTime(Number(miniplayerSeek.value));
+  });
+
+  miniplayerSeek.addEventListener('change', async () => {
+    const ms = Number(miniplayerSeek.value);
+    playbackState.position = ms;
+    isSeeking = false;
+    if (spotifyPlayer) await spotifyPlayer.seek(ms);
+    updateMiniplayerProgress();
+  });
+}
+
+if (miniplayerMute) miniplayerMute.addEventListener('click', toggleMute);
+
+if (miniplayerVolumeSlider) {
+  miniplayerVolumeSlider.addEventListener('input', () => setVolume(Number(miniplayerVolumeSlider.value)));
+}
+
+if (miniplayerLyricsBtn) miniplayerLyricsBtn.addEventListener('click', toggleLyrics);
+if (lyricsClose) lyricsClose.addEventListener('click', closeLyrics);
+
+if (lyricsView) {
+  lyricsView.addEventListener('click', (e) => {
+    if (e.target === lyricsView) closeLyrics();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !lyricsView.hidden) closeLyrics();
+  });
+}
+
+window.onSpotifyWebPlaybackSDKReady = () => {
+  sdkReady = true;
+  maybeInitPlayer();
+};
+
+refreshMiniplayerButtons();
+updateMiniplayerProgress();
+updateVolumeUi();
 
 // ── Init ─────────────────────────────────────────────
 
