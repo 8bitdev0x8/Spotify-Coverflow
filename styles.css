@@ -38,6 +38,25 @@ button { font: inherit; border: none; cursor: pointer; }
   width: 100%;
 }
 
+/* Staggered entrance: each landing element rises in with a small delay.
+   `backwards` keeps them invisible until their turn. Replays whenever the
+   landing view is shown again (e.g. after disconnect). */
+@keyframes landing-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.landing-inner > * {
+  animation: landing-rise 0.6s cubic-bezier(0.22, 0.8, 0.2, 1) backwards;
+}
+
+.landing-inner > :nth-child(1) { animation-delay: 0.05s; }
+.landing-inner > :nth-child(2) { animation-delay: 0.14s; }
+.landing-inner > :nth-child(3) { animation-delay: 0.23s; }
+.landing-inner > :nth-child(4) { animation-delay: 0.32s; }
+.landing-inner > :nth-child(5) { animation-delay: 0.41s; }
+.landing-inner > :nth-child(6) { animation-delay: 0.5s; }
+
 .landing-icon {
   color: #1db954;
   margin-bottom: 1.25rem;
@@ -106,6 +125,14 @@ button { font: inherit; border: none; cursor: pointer; }
 
 /* ── Player ──────────────────────────────────────────── */
 
+/* Registered so --ambient interpolates — the gradient cross-fades smoothly as
+   the album changes. Browsers without @property fall back to an instant swap. */
+@property --ambient {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #1a3358;
+}
+
 .view-player {
   position: fixed;
   inset: 0;
@@ -113,7 +140,9 @@ button { font: inherit; border: none; cursor: pointer; }
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(circle at top left, #1a3358 0%, #07111f 45%, #03060b 100%);
+  --ambient: #1a3358;
+  background: radial-gradient(circle at top left, var(--ambient) 0%, #07111f 48%, #03060b 100%);
+  transition: --ambient 0.8s ease;
   overflow: hidden;
   padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) calc(8.5rem + env(safe-area-inset-bottom, 0)) env(safe-area-inset-left, 0);
 }
@@ -257,18 +286,29 @@ button { font: inherit; border: none; cursor: pointer; }
 /* ── Track info ──────────────────────────────────────── */
 
 .selected-info {
+  --title-size: clamp(1.4rem, 4.5vw, 2.5rem);
+  --artist-size: clamp(0.95rem, 2.8vw, 1.45rem);
+  --album-size: clamp(0.78rem, 1.8vw, 1rem);
+  --info-pad: clamp(0.85rem, 3vh, 1.75rem);
   text-align: center;
-  padding: clamp(0.85rem, 3vh, 1.75rem) 1.5rem 0;
+  padding: var(--info-pad) 1.5rem 0;
   max-width: 640px;
   width: 100%;
   flex-shrink: 0;
-  /* Fixed height so the coverflow never shifts when text is short or long */
-  height: clamp(8rem, 18vh, 11rem);
+  /* Fixed height so the coverflow never shifts when text is short or long.
+     Derived from the actual text sizes so the worst case (2-line title +
+     artist + album) always fits instead of getting clipped. */
+  height: calc(
+    var(--info-pad)
+    + var(--title-size) * 1.2 * 2 + 0.3rem
+    + var(--artist-size) * 1.4 + 0.2rem
+    + var(--album-size) * 1.4 + 0.4rem
+  );
   overflow: hidden;
 }
 
 .track-title {
-  font-size: clamp(1.4rem, 4.5vw, 2.5rem);
+  font-size: var(--title-size);
   font-weight: 700;
   margin: 0 0 0.3rem;
   line-height: 1.2;
@@ -282,7 +322,8 @@ button { font: inherit; border: none; cursor: pointer; }
 }
 
 .track-artist {
-  font-size: clamp(0.95rem, 2.8vw, 1.45rem);
+  font-size: var(--artist-size);
+  line-height: 1.4;
   color: rgba(247, 248, 255, 0.68);
   margin: 0 0 0.2rem;
   font-weight: 500;
@@ -292,7 +333,8 @@ button { font: inherit; border: none; cursor: pointer; }
 }
 
 .track-album {
-  font-size: clamp(0.78rem, 1.8vw, 1rem);
+  font-size: var(--album-size);
+  line-height: 1.4;
   color: rgba(247, 248, 255, 0.38);
   margin: 0;
   white-space: nowrap;
@@ -422,6 +464,83 @@ button { font: inherit; border: none; cursor: pointer; }
   border-top: 1px solid rgba(255,255,255,0.07);
   margin: 0.1rem 0;
 }
+
+.playlist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-height: min(300px, 38vh);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.18) transparent;
+}
+
+.playlist-list .placeholder {
+  font-size: 0.78rem;
+  padding: 0.3rem 0.45rem;
+}
+
+.playlist-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.4rem 0.45rem;
+  border-radius: 10px;
+  background: none;
+  color: rgba(255,255,255,0.75);
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+}
+
+.playlist-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
+.playlist-item.is-active { background: rgba(29,185,84,0.14); color: #1ed760; }
+
+.playlist-thumb {
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.08);
+  font-size: 0.85rem;
+}
+
+.playlist-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.playlist-thumb-liked {
+  background: linear-gradient(135deg, #450af5, #8e8ee5);
+  color: #fff;
+}
+
+.playlist-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.playlist-item-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.playlist-item-meta {
+  font-size: 0.68rem;
+  color: rgba(255,255,255,0.4);
+}
+
+.playlist-item.is-active .playlist-item-meta { color: rgba(30,215,96,0.65); }
 
 /* ── Miniplayer ──────────────────────────────────────── */
 
@@ -690,4 +809,5 @@ button { font: inherit; border: none; cursor: pointer; }
 
 @media (prefers-reduced-motion: reduce) {
   .cover-card { transition: none; }
+  .landing-inner > * { animation: none; }
 }
