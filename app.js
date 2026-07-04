@@ -17,6 +17,7 @@ const status = document.getElementById('status');
 const selectedInfo = document.getElementById('selected-info');
 const playlistLinkInput = document.getElementById('playlist-link');
 const loadPlaylistButton = document.getElementById('load-playlist');
+const playlistList = document.getElementById('playlist-list');
 const landing = document.getElementById('landing');
 const player = document.getElementById('player');
 const menuBtn = document.getElementById('menu-btn');
@@ -59,6 +60,26 @@ const appState = {
 let loadGeneration = 0;
 const RENDER_WINDOW = 8;
 
+const PLACEHOLDER_ART = 'https://placehold.co/400x400/png?text=No+Art';
+const ART_SIZE_CARD = 300;   // side cards, vinyl label, reflection, color sampling
+const ART_SIZE_ACTIVE = 640; // front-facing card upgrades to this once settled
+
+// Spotify lists album images largest → smallest; return the smallest rendition
+// that still covers targetSize (entries without a width are assumed to fit).
+function pickArtUrl(track, targetSize) {
+  const images = track?.album?.images || [];
+  if (!images.length) return PLACEHOLDER_ART;
+  let pick = images[0];
+  for (const image of images) {
+    if (!image?.url) continue;
+    if (!image.width || image.width >= targetSize) pick = image;
+  }
+  return pick.url || PLACEHOLDER_ART;
+}
+// How many upcoming tracks to hand the player at once so playback continues
+// past the current song. Kept well under Spotify's request-size limits.
+const QUEUE_WINDOW = 50;
+
 let sdkReady = false;
 let spotifyPlayer = null;
 let deviceId = null;
@@ -66,6 +87,7 @@ let isSeeking = false;
 let progressTimer = null;
 let playbackState = { paused: true, position: 0, duration: 0 };
 let nowPlayingIndex = -1;
+let lastPlayingUri = null;
 
 const volumeKey = 'spotify_player_volume';
 let currentVolume = Number(localStorage.getItem(volumeKey) ?? 70);
@@ -434,35 +456,207 @@ async function loadLikedTracks() {
   appState.activeIndex = 0;
   setStatus('Loading liked tracks…');
 
-  let url = 'https://api.spotify.com/v1/me/tracks?limit=50';
-  let firstBatch = true;
+  const LIMIT = 50;
+  const authHeaders = { headers: { Authorization: `Bearer ${appState.accessToken}` } };
 
-  while (url) {
-    if (loadGeneration !== gen) return;
+  const first = await fetchSpotifyJson(
+    `https://api.spotify.com/v1/me/tracks?limit=${LIMIT}&offset=0`,
+    authHeaders,
+    'Unable to load liked tracks.'
+  );
 
-    const { response, payload, error } = await fetchSpotifyJson(
-      url,
-      { headers: { Authorization: `Bearer ${appState.accessToken}` } },
-      'Unable to load liked tracks.'
-    );
-
-    if (loadGeneration !== gen) return;
-    if (error || !response || !response.ok) {
-      if (firstBatch) loadFallbackPlaylist('Could not load liked tracks.');
-      return;
-    }
-
-    appState.items.push(...payload.items.map((e) => e.track).filter(Boolean));
-    if (firstBatch) { firstBatch = false; renderCoverflow(); }
-    setStatus(`${appState.items.length} tracks${payload.next ? '…' : ' loaded.'}`);
-    url = payload.next;
+  if (loadGeneration !== gen) return;
+  if (first.error || !first.response || !first.response.ok) {
+    loadFallbackPlaylist('Could not load liked tracks.');
+    return;
   }
+
+  appState.items = first.payload.items.map((e) => e.track).filter(Boolean);
+  renderCoverflow();
+
+  const total = first.payload.total || appState.items.length;
+  if (appState.items.length >= total) {
+    setStatus(`${appState.items.length} tracks loaded.`);
+    return;
+  }
+  setStatus(`${appState.items.length} / ${total} tracks…`);
+
+  // Fetch the remaining pages concurrently instead of walking `next` serially —
+  // a large library loads several times faster. Pages land out of order, so
+  // buffer them and append only contiguous runs to keep the coverflow ordered.
+  const offsets = [];
+  for (let offset = LIMIT; offset < total; offset += LIMIT) offsets.push(offset);
+
+  const pages = new Array(offsets.length);
+  let appendedPages = 0;
+  let cursor = 0;
+  const CONCURRENCY = 4;
+
+  const appendReadyPages = () => {
+    while (appendedPages < pages.length && pages[appendedPages] !== undefined) {
+      appState.items.push(...pages[appendedPages]);
+      appendedPages++;
+    }
+    const done = appendedPages === pages.length;
+    setStatus(done
+      ? `${appState.items.length} tracks loaded.`
+      : `${appState.items.length} / ${total} tracks…`);
+  };
+
+  const worker = async () => {
+    while (cursor < offsets.length) {
+      const pageIndex = cursor++;
+      if (loadGeneration !== gen) return;
+
+      const { response, payload, error } = await fetchSpotifyJson(
+        `https://api.spotify.com/v1/me/tracks?limit=${LIMIT}&offset=${offsets[pageIndex]}`,
+        authHeaders,
+        'Unable to load liked tracks.'
+      );
+
+      if (loadGeneration !== gen) return;
+      pages[pageIndex] = (error || !response || !response.ok)
+        ? []
+        : payload.items.map((e) => e.track).filter(Boolean);
+      appendReadyPages();
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, offsets.length) }, worker));
 }
 
 async function loadDefaultContent() {
   maybeInitPlayer();
   if (playlistLink) await loadPlaylistTracks();
   else await loadLikedTracks();
+}
+
+// ── Playlist picker ───────────────────────────────────
+
+let playlistsPromise = null;
+
+function resetPlaylistList() {
+  playlistsPromise = null;
+  if (playlistList) playlistList.innerHTML = '<p class="placeholder">Connect with Spotify to see your playlists.</p>';
+}
+
+function updatePlaylistListSelection() {
+  if (!playlistList) return;
+  const activeId = extractPlaylistId(playlistLink) || '';
+  playlistList.querySelectorAll('.playlist-item').forEach((item) => {
+    item.classList.toggle('is-active', item.dataset.playlistId === activeId);
+  });
+}
+
+function createPlaylistItem({ id, name, imageUrl, meta }) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'playlist-item';
+  btn.dataset.playlistId = id;
+
+  const thumb = document.createElement('span');
+  thumb.className = 'playlist-thumb';
+  if (imageUrl) {
+    const img = document.createElement('img');
+    img.crossOrigin = 'anonymous';
+    img.src = imageUrl;
+    img.alt = '';
+    img.loading = 'lazy';
+    thumb.append(img);
+  } else {
+    thumb.classList.add('playlist-thumb-liked');
+    thumb.textContent = '♥';
+  }
+
+  const text = document.createElement('span');
+  text.className = 'playlist-item-text';
+  const title = document.createElement('span');
+  title.className = 'playlist-item-name';
+  title.textContent = name;
+  text.append(title);
+  if (meta) {
+    const sub = document.createElement('span');
+    sub.className = 'playlist-item-meta';
+    sub.textContent = meta;
+    text.append(sub);
+  }
+
+  btn.append(thumb, text);
+  return btn;
+}
+
+function renderPlaylistList(playlists) {
+  if (!playlistList) return;
+  playlistList.innerHTML = '';
+
+  const liked = createPlaylistItem({ id: '', name: 'Liked Songs', meta: 'Your library' });
+  liked.addEventListener('click', () => {
+    clearPlaylistLink();
+    if (menuPanel) menuPanel.hidden = true;
+    updatePlaylistListSelection();
+    loadLikedTracks();
+  });
+  playlistList.append(liked);
+
+  playlists.forEach((playlist) => {
+    const images = playlist.images || [];
+    const item = createPlaylistItem({
+      id: playlist.id,
+      name: playlist.name || 'Untitled playlist',
+      imageUrl: images[images.length - 1]?.url || '',
+      meta: Number.isFinite(playlist.tracks?.total) ? `${playlist.tracks.total} tracks` : '',
+    });
+    item.addEventListener('click', () => {
+      updatePlaylistLink(playlist.id);
+      if (menuPanel) menuPanel.hidden = true;
+      updatePlaylistListSelection();
+      loadPlaylistTracks();
+    });
+    playlistList.append(item);
+  });
+
+  updatePlaylistListSelection();
+}
+
+async function loadUserPlaylists() {
+  if (!playlistList) return;
+  if (!await ensureToken()) return;
+
+  playlistList.innerHTML = '<p class="placeholder">Loading playlists…</p>';
+
+  const playlists = [];
+  let url = 'https://api.spotify.com/v1/me/playlists?limit=50';
+
+  while (url) {
+    const { response, payload, error } = await fetchSpotifyJson(
+      url,
+      { headers: { Authorization: `Bearer ${appState.accessToken}` } },
+      'Unable to load your playlists.'
+    );
+
+    if (error || !response || !response.ok) {
+      if (!playlists.length) {
+        playlistList.innerHTML = '<p class="placeholder">Couldn’t load playlists.</p>';
+        throw new Error('playlist fetch failed');
+      }
+      break;
+    }
+
+    playlists.push(...payload.items.filter(Boolean));
+    url = payload.next;
+  }
+
+  renderPlaylistList(playlists);
+}
+
+function ensurePlaylistsLoaded() {
+  if (!appState.accessToken) return;
+  if (!playlistsPromise) {
+    playlistsPromise = loadUserPlaylists().catch((err) => {
+      console.error(err);
+      playlistsPromise = null; // allow a retry next time the menu opens
+    });
+  }
 }
 
 function createCard(track, index) {
@@ -474,12 +668,19 @@ function createCard(track, index) {
   artFrame.className = 'art-frame';
 
   const img = document.createElement('img');
-  const imageUrl = track.album?.images?.[0]?.url || 'https://placehold.co/400x400/png?text=No+Art';
+  // If this cover was already upgraded to full size once, start there directly —
+  // recreating the card at low res and re-upgrading causes a visible pop.
+  const hiUrl = pickArtUrl(track, ART_SIZE_ACTIVE);
+  const imageUrl = hiResLoaded.has(hiUrl) ? hiUrl : pickArtUrl(track, ART_SIZE_CARD);
+  // CORS mode keeps the response readable so the service worker can cache it
+  // and the ambient color sampler can reuse it without tainting its canvas.
+  img.crossOrigin = 'anonymous';
   img.src = imageUrl;
   img.alt = `${track.name} album art`;
-  img.loading = index < 6 ? 'eager' : 'lazy';
+  // Virtualization caps live cards to ~17; eager loading avoids the blank
+  // pop-in lazy images show while scrolling through the flow.
   img.decoding = 'async';
-  img.fetchPriority = index < 3 ? 'high' : 'auto';
+  img.fetchPriority = Math.abs(index - appState.activeIndex) < 3 ? 'high' : 'auto';
 
   artFrame.append(img);
 
@@ -492,6 +693,7 @@ function createCard(track, index) {
   vinylLabel.className = 'card-vinyl-label';
   const vinylArt = document.createElement('img');
   vinylArt.className = 'card-vinyl-art';
+  vinylArt.crossOrigin = 'anonymous';
   vinylArt.src = imageUrl;
   vinylArt.alt = '';
   vinylArt.loading = 'lazy';
@@ -585,27 +787,155 @@ function updateSelection() {
   if (!selectedTrack) {
     selectedInfo.innerHTML = '<p class="placeholder">Nothing selected yet.</p>';
     refreshMiniplayerButtons();
-    if (lyricsView && !lyricsView.hidden) fetchLyricsForCurrent();
+    scheduleSettledTasks();
     return;
   }
 
   const artistNames = (selectedTrack.artists || []).map((a) => a.name).join(', ');
   const albumName   = selectedTrack.album?.name || 'Unknown album';
 
-  selectedInfo.innerHTML = `
-    <p class="track-title">${selectedTrack.name}</p>
-    <p class="track-artist">${artistNames}</p>
-    <p class="track-album">${albumName}</p>
-  `;
+  // textContent (not innerHTML interpolation) so track names containing < or &
+  // render correctly.
+  selectedInfo.innerHTML = '';
+  const titleEl = document.createElement('p');
+  titleEl.className = 'track-title';
+  titleEl.textContent = selectedTrack.name;
+  const artistEl = document.createElement('p');
+  artistEl.className = 'track-artist';
+  artistEl.textContent = artistNames;
+  const albumEl = document.createElement('p');
+  albumEl.className = 'track-album';
+  albumEl.textContent = albumName;
+  selectedInfo.append(titleEl, artistEl, albumEl);
 
   refreshMiniplayerButtons();
-  if (lyricsView && !lyricsView.hidden) fetchLyricsForCurrent();
+  scheduleSettledTasks();
+}
+
+// Debounce the per-selection side work (hi-res art, ambient color, lyrics) so
+// flipping quickly through covers doesn't fire network requests for every
+// cover passed along the way — only for the one the user settles on.
+let settleTimer;
+function scheduleSettledTasks() {
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => {
+    upgradeActiveCardArt();
+    updateAmbientBackground();
+    if (lyricsView && !lyricsView.hidden) fetchLyricsForCurrent();
+  }, 160);
+}
+
+// Full-size renditions that have finished loading at least once — cards can be
+// created straight at this size with no low→high swap.
+const hiResLoaded = new Set();
+
+// Swap the front-facing card up to the full-size rendition, preloading AND
+// decoding it first so the swap never paints a blank frame.
+function upgradeActiveCardArt() {
+  const card = coverflowTrack.querySelector('.cover-card.is-active');
+  if (!card) return;
+  const track = appState.items[+card.dataset.index];
+  const img = card.querySelector('.art-frame img');
+  if (!track || !img) return;
+
+  const hiUrl = pickArtUrl(track, ART_SIZE_ACTIVE);
+  if (!hiUrl || img.src === hiUrl) return;
+
+  img.dataset.hiSrc = hiUrl;
+  const pre = new Image();
+  pre.crossOrigin = 'anonymous';
+  const swap = () => {
+    hiResLoaded.add(hiUrl);
+    if (img.isConnected && img.dataset.hiSrc === hiUrl) img.src = hiUrl;
+  };
+  pre.onload = () => {
+    if (pre.decode) pre.decode().then(swap).catch(swap);
+    else swap();
+  };
+  pre.src = hiUrl;
 }
 
 function selectItem(index) {
   appState.activeIndex = index;
   syncVirtualCards();
   updateSelection();
+}
+
+// ── Ambient background ────────────────────────────────
+
+const ambientColorCache = new Map();
+let ambientGen = 0;
+
+// Rebalance the sampled color for use as a dark backdrop: exaggerate the hue a
+// little, then scale brightness so white text stays readable on top.
+function tuneAmbientColor(r, g, b, brightness) {
+  const avg = (r + g + b) / 3;
+  const SATURATION = 1.6;
+  r = avg + (r - avg) * SATURATION;
+  g = avg + (g - avg) * SATURATION;
+  b = avg + (b - avg) * SATURATION;
+  const scale = brightness / Math.max(r, g, b, 1);
+  return [r, g, b].map((c) => Math.round(Math.min(255, Math.max(0, c * scale))));
+}
+
+function extractAverageColor(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const size = 12;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0, size, size);
+        const { data } = ctx.getImageData(0, 0, size, size);
+        let r = 0, g = 0, b = 0;
+        const pixels = data.length / 4;
+        for (let i = 0; i < data.length; i += 4) {
+          r += data[i];
+          g += data[i + 1];
+          b += data[i + 2];
+        }
+        resolve([r / pixels, g / pixels, b / pixels]);
+      } catch (err) {
+        reject(err); // tainted canvas (no CORS) — skip the effect for this image
+      }
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+async function updateAmbientBackground() {
+  if (!player) return;
+  // Always follow the cover the user is looking at; the coverflow itself
+  // follows the playing track on track changes, so the backdrop tracks the
+  // music without fighting the user's browsing.
+  const track = appState.items[appState.activeIndex];
+  if (!track) return;
+  // Reuse the card-size rendition — it's already in the image cache.
+  const url = pickArtUrl(track, ART_SIZE_CARD);
+  if (!url) return;
+
+  const gen = ++ambientGen;
+  let base = ambientColorCache.get(url);
+  if (!base) {
+    base = await extractAverageColor(url).catch(() => null);
+    if (!base) return;
+    ambientColorCache.set(url, base);
+  }
+  if (gen !== ambientGen) return; // user already moved to another cover
+
+  // Glow brighter while music plays, dimmer while paused or idle.
+  const [r, g, b] = tuneAmbientColor(base[0], base[1], base[2], playbackState.paused ? 96 : 132);
+  player.style.setProperty('--ambient', `rgb(${r}, ${g}, ${b})`);
+}
+
+function resetAmbientBackground() {
+  ambientGen++;
+  if (player) player.style.removeProperty('--ambient');
 }
 
 // ── Miniplayer / Web Playback SDK ─────────────────────
@@ -645,24 +975,54 @@ function startProgressTimer() {
   }, 500);
 }
 
+// Only tick the progress interval while music is actually playing.
+function syncProgressTimer() {
+  if (playbackState.paused) {
+    clearInterval(progressTimer);
+    progressTimer = null;
+  } else if (!progressTimer) {
+    startProgressTimer();
+  }
+}
+
 function handlePlayerStateChanged(state) {
   if (!state) {
     playbackState = { paused: true, position: 0, duration: 0 };
     nowPlayingIndex = -1;
+    lastPlayingUri = null;
     updateMiniplayerProgress();
     updateNowPlayingCard();
+    syncProgressTimer();
+    updateAmbientBackground();
     return;
   }
 
   playbackState = { paused: state.paused, position: state.position, duration: state.duration };
 
   const currentTrack = state.track_window?.current_track;
-  const idx = currentTrack?.uri ? appState.items.findIndex((t) => t.uri === currentTrack.uri) : -1;
-  nowPlayingIndex = idx;
-  if (idx >= 0 && idx !== appState.activeIndex) selectItem(idx);
+  const uri = currentTrack?.uri || null;
+  // Spotify may substitute a relinked (region-specific) copy of the requested
+  // track, reporting a different URI than the one in the user's library.
+  // linked_from carries the originally requested URI — match on either, else
+  // the playing card never gets its vinyl/now-playing treatment.
+  const linkedUri = currentTrack?.linked_from?.uri || null;
+  nowPlayingIndex = (uri || linkedUri)
+    ? appState.items.findIndex((t) => t.uri === uri || (linkedUri && t.uri === linkedUri))
+    : -1;
+
+  // Re-center the coverflow only when the playing track actually changes
+  // (start of playback, auto-advance). The SDK also fires state events for
+  // pause/resume/seek and periodically mid-song — those must not yank the
+  // user back while they're browsing other covers.
+  if (uri !== lastPlayingUri) {
+    lastPlayingUri = uri;
+    if (nowPlayingIndex >= 0 && nowPlayingIndex !== appState.activeIndex) selectItem(nowPlayingIndex);
+  }
 
   updateMiniplayerProgress();
   updateNowPlayingCard();
+  syncProgressTimer();
+  updateAmbientBackground();
 }
 
 function maybeInitPlayer() {
@@ -692,7 +1052,6 @@ function maybeInitPlayer() {
   spotifyPlayer.addListener('player_state_changed', handlePlayerStateChanged);
 
   spotifyPlayer.connect();
-  startProgressTimer();
 }
 
 function teardownPlayer() {
@@ -700,8 +1059,10 @@ function teardownPlayer() {
   spotifyPlayer = null;
   deviceId = null;
   clearInterval(progressTimer);
+  progressTimer = null;
   playbackState = { paused: true, position: 0, duration: 0 };
   nowPlayingIndex = -1;
+  lastPlayingUri = null;
   updateMiniplayerProgress();
   updateNowPlayingCard();
 }
@@ -721,6 +1082,13 @@ async function playTrackAtIndex(index) {
     return;
   }
 
+  // Queue the clicked track plus the tracks after it so playback auto-advances
+  // instead of stopping at the end of a single song.
+  const uris = [];
+  for (let i = index; i < appState.items.length && uris.length < QUEUE_WINDOW; i++) {
+    if (appState.items[i]?.uri) uris.push(appState.items[i].uri);
+  }
+
   const { response, payload, error } = await fetchSpotifyJson(
     `https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`,
     {
@@ -729,7 +1097,7 @@ async function playTrackAtIndex(index) {
         Authorization: `Bearer ${appState.accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ uris: [track.uri] }),
+      body: JSON.stringify({ uris }),
     },
     'Unable to start playback.'
   );
@@ -833,11 +1201,29 @@ function toggleLyrics() {
   else closeLyrics();
 }
 
+// Accumulate wheel deltas instead of stepping per event — trackpads fire dozens
+// of small events per flick, which used to skip many covers at once.
+let wheelAcc = 0;
+let wheelResetTimer;
+const WHEEL_STEP = 90;
+
 function handleWheel(event) {
   if (!appState.items.length) return;
   event.preventDefault();
-  const direction = event.deltaY > 0 ? 1 : -1;
-  selectItem((appState.activeIndex + direction + appState.items.length) % appState.items.length);
+
+  const delta = event.deltaMode === 1 ? event.deltaY * 33 : event.deltaY;
+  if (Math.sign(delta) !== Math.sign(wheelAcc)) wheelAcc = 0; // direction change
+  wheelAcc += delta;
+
+  clearTimeout(wheelResetTimer);
+  wheelResetTimer = setTimeout(() => { wheelAcc = 0; }, 150);
+
+  const steps = Math.trunc(wheelAcc / WHEEL_STEP);
+  if (!steps) return;
+  wheelAcc -= steps * WHEEL_STEP;
+
+  const next = Math.min(appState.items.length - 1, Math.max(0, appState.activeIndex + steps));
+  if (next !== appState.activeIndex) selectItem(next);
 }
 
 // ── Event listeners ───────────────────────────────────
@@ -864,6 +1250,7 @@ if (loadPlaylistButton && playlistLinkInput) {
     updatePlaylistLink(url);
     playlistLinkInput.value = '';
     if (menuPanel) menuPanel.hidden = true;
+    updatePlaylistListSelection();
     loadPlaylistTracks();
   });
 
@@ -906,6 +1293,7 @@ if (menuBtn && menuPanel) {
   menuBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     menuPanel.hidden = !menuPanel.hidden;
+    if (!menuPanel.hidden) ensurePlaylistsLoaded();
   });
 
   document.addEventListener('click', (e) => {
@@ -920,6 +1308,8 @@ if (disconnectBtn) {
     teardownPlayer();
     clearToken();
     clearPlaylistLink();
+    resetPlaylistList();
+    resetAmbientBackground();
     if (menuPanel) menuPanel.hidden = true;
     showLanding();
     appState.items = [];
